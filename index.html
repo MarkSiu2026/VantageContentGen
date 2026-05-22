@@ -1,4 +1,16 @@
-﻿import { useState, useRef, useEffect } from "react";
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vantage Content Generator</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">const { useState, useRef, useEffect } = React;
 
 /* ─── BRAND TOKENS ───────────────────────────────────────────────── */
 const B = {
@@ -5843,7 +5855,7 @@ const DEFAULT_PRIORITY_RULES = {
   customRules: [],
 };
 
-export default function VantageAutomation() {
+function VantageAutomation() {
   useFont();
 
   const [phase,       setPhase]       = useState("fetch");   // fetch | dashboard | preview
@@ -8114,3 +8126,7 @@ Focus on: central bank decisions, CPI/inflation, GDP, employment/payrolls, PMI, 
     </div>
   );
 }
+    ReactDOM.createRoot(document.getElementById('root')).render(<VantageAutomation />);
+  </script>
+</body>
+</html>
