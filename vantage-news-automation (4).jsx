@@ -6047,16 +6047,17 @@ export default function VantageAutomation() {
     const rulesRef = priorityRules; // snapshot for closures
 
     // Race all CORS proxies simultaneously — first valid response wins
-    // 4.5s timeout per proxy (3 running in parallel = same wall time as before)
+    // 8s timeout gives cold-start proxies enough time to respond
     const PROXIES = [
       url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
       url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
       url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+      url => `https://thingproxy.freeboard.io/fetch/${url}`,
     ];
 
     async function tryProxy(makeProxy, rssUrl, sourceName) {
       const proxyUrl = makeProxy(rssUrl);
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(4500) });
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const text = await resp.text();
       let xml = text;
@@ -6184,8 +6185,21 @@ CRITICAL RULES:
     setLoading(false); setLoadMsg("");
 
     if (all.length === 0) {
-      // Show detailed error with log
-      setError("No headlines fetched — see source log below for details.");
+      // All proxies failed — fall back to mock data with a visible warning
+      setError("⚠ All CORS proxies failed (network or rate-limit issue). Showing sample headlines — data is not live.");
+      const mockWithMeta = MOCK_HEADLINES.map(h => ({
+        ...h,
+        entities:    h.entities   || extractEntities(h.headline),
+        direction:   h.direction  || detectDirection(h.headline),
+        topic:       h.topic      || detectTopic(h.headline, extractEntities(h.headline)),
+        fetchedAt:   Date.now(),
+        sourceCount: 1,
+        _isMock:     true,
+      }));
+      setHeadlines(mockWithMeta.sort((a,b)=>(b.importance||0)-(a.importance||0)));
+      setLastFetchAt(Date.now());
+      setLoading(false); setLoadMsg("");
+      setPhase("dashboard");
       return;
     }
 
@@ -7023,12 +7037,15 @@ Focus on: central bank decisions, CPI/inflation, GDP, employment/payrolls, PMI, 
       )}
 
       {/* ── ERROR TOAST ── */}
-      {error && (
-        <div style={{ background:"rgba(239,68,68,0.12)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:10, padding:"10px 16px", margin:"16px 24px 0", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13 }}>
-          <span style={{ color:"#FCA5A5" }}>⚠ {error}</span>
-          <button onClick={()=>setError("")} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:16 }}>✕</button>
-        </div>
-      )}
+      {error && (() => {
+        const isWarn = error.startsWith("⚠");
+        return (
+          <div style={{ background: isWarn ? "rgba(251,191,36,0.10)" : "rgba(239,68,68,0.12)", border: `1px solid ${isWarn ? "rgba(251,191,36,0.35)" : "rgba(239,68,68,0.3)"}`, borderRadius:10, padding:"10px 16px", margin:"16px 24px 0", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13 }}>
+            <span style={{ color: isWarn ? "#FCD34D" : "#FCA5A5" }}>{error}</span>
+            <button onClick={()=>setError("")} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:16 }}>✕</button>
+          </div>
+        );
+      })()}
 
       {/* ════════════════════════════════════════════════════════════ */}
       {/* PHASE 1 — FETCH                                             */}

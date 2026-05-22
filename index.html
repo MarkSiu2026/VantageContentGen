@@ -1,16 +1,4 @@
-﻿<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vantage Content Generator</title>
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="text/babel">const { useState, useRef, useEffect } = React;
+﻿import { useState, useRef, useEffect } from "react";
 
 /* ─── BRAND TOKENS ───────────────────────────────────────────────── */
 const B = {
@@ -421,11 +409,18 @@ function buildTopicClusters(headlines) {
 function parseRssXml(xmlText, sourceName, rules) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, "text/xml");
-  const items = [...doc.querySelectorAll("item")];
+  // Support both RSS 2.0 (<item>) and Atom (<entry>) feeds
+  const isAtom = doc.querySelector("feed") !== null;
+  const items = isAtom
+    ? [...doc.querySelectorAll("entry")]
+    : [...doc.querySelectorAll("item")];
   const fetchedAt = Date.now();
   return items.slice(0, 8).map((item, i) => {
     const headline = item.querySelector("title")?.textContent?.trim() || "";
-    const rawDesc  = item.querySelector("description")?.textContent || "";
+    // Atom uses <summary> or <content>, RSS uses <description>
+    const rawDesc  = isAtom
+      ? (item.querySelector("summary")?.textContent || item.querySelector("content")?.textContent || "")
+      : (item.querySelector("description")?.textContent || "");
     const summary  = rawDesc
       .replace(/<[^>]+>/g,"")           // strip HTML tags
       .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n))  // decode &#8217; etc
@@ -435,9 +430,14 @@ function parseRssXml(xmlText, sourceName, rules) {
       .replace(/&nbsp;/g," ").replace(/&mdash;/g,"—").replace(/&ndash;/g,"–")
       .replace(/&rsquo;/g,"'").replace(/&lsquo;/g,"'").replace(/&rdquo;/g,'"').replace(/&ldquo;/g,'"')
       .replace(/\s{2,}/g," ").trim().slice(0,200);
-    const pubDate  = item.querySelector("pubDate")?.textContent || "";
-    // Validate link: must be a real http/https URL, not a GUID or empty string
-    const rawLink  = item.querySelector("link")?.textContent?.trim() || "";
+    // Atom uses <published> or <updated>; RSS uses <pubDate>
+    const pubDate  = isAtom
+      ? (item.querySelector("published")?.textContent || item.querySelector("updated")?.textContent || "")
+      : (item.querySelector("pubDate")?.textContent || "");
+    // Atom uses <link href="..."> (attribute), RSS uses <link> text content
+    const rawLink  = isAtom
+      ? (item.querySelector("link[href]")?.getAttribute("href") || item.querySelector("link")?.textContent?.trim() || "")
+      : (item.querySelector("link")?.textContent?.trim() || "");
     const link     = /^https?:\/\/.{10,}/.test(rawLink) ? rawLink : "";
     const importance = scoreImportance(headline + " " + summary, rules);
     const category   = detectCategory(headline + " " + summary);
@@ -4818,6 +4818,7 @@ function checkSlideTextDensity(slide) {
 const ARTICLE_PROXIES = [
   url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
 function stripHtml(html) {
@@ -5842,7 +5843,7 @@ const DEFAULT_PRIORITY_RULES = {
   customRules: [],
 };
 
-function VantageAutomation() {
+export default function VantageAutomation() {
   useFont();
 
   const [phase,       setPhase]       = useState("fetch");   // fetch | dashboard | preview
@@ -6009,9 +6010,9 @@ function VantageAutomation() {
     setLoading(true); setError(""); setStreamText("");
     setFetchLog([]);
 
-    // ── SANDBOX MODE: real network blocked in Claude artifacts ────────
-    // Set to false when running locally with real network access.
-    const SANDBOX_MODE = true;
+    // ── SANDBOX MODE: set to true only inside Claude artifacts (network blocked) ──
+    // false = live RSS fetching (use this for GitHub / local deployments)
+    const SANDBOX_MODE = false;
     if (SANDBOX_MODE) {
       setLoadMsg("Loading mock headlines (sandbox mode)…");
       await new Promise(r => setTimeout(r, 600));
@@ -6046,16 +6047,17 @@ function VantageAutomation() {
     const rulesRef = priorityRules; // snapshot for closures
 
     // Race all CORS proxies simultaneously — first valid response wins
-    // 4.5s timeout per proxy (3 running in parallel = same wall time as before)
+    // 8s timeout gives cold-start proxies enough time to respond
     const PROXIES = [
       url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
       url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
       url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+      url => `https://thingproxy.freeboard.io/fetch/${url}`,
     ];
 
     async function tryProxy(makeProxy, rssUrl, sourceName) {
       const proxyUrl = makeProxy(rssUrl);
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(4500) });
+      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const text = await resp.text();
       let xml = text;
@@ -6183,8 +6185,21 @@ CRITICAL RULES:
     setLoading(false); setLoadMsg("");
 
     if (all.length === 0) {
-      // Show detailed error with log
-      setError("No headlines fetched — see source log below for details.");
+      // All proxies failed — fall back to mock data with a visible warning
+      setError("⚠ All CORS proxies failed (network or rate-limit issue). Showing sample headlines — data is not live.");
+      const mockWithMeta = MOCK_HEADLINES.map(h => ({
+        ...h,
+        entities:    h.entities   || extractEntities(h.headline),
+        direction:   h.direction  || detectDirection(h.headline),
+        topic:       h.topic      || detectTopic(h.headline, extractEntities(h.headline)),
+        fetchedAt:   Date.now(),
+        sourceCount: 1,
+        _isMock:     true,
+      }));
+      setHeadlines(mockWithMeta.sort((a,b)=>(b.importance||0)-(a.importance||0)));
+      setLastFetchAt(Date.now());
+      setLoading(false); setLoadMsg("");
+      setPhase("dashboard");
       return;
     }
 
@@ -7022,12 +7037,15 @@ Focus on: central bank decisions, CPI/inflation, GDP, employment/payrolls, PMI, 
       )}
 
       {/* ── ERROR TOAST ── */}
-      {error && (
-        <div style={{ background:"rgba(239,68,68,0.12)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:10, padding:"10px 16px", margin:"16px 24px 0", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13 }}>
-          <span style={{ color:"#FCA5A5" }}>⚠ {error}</span>
-          <button onClick={()=>setError("")} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:16 }}>✕</button>
-        </div>
-      )}
+      {error && (() => {
+        const isWarn = error.startsWith("⚠");
+        return (
+          <div style={{ background: isWarn ? "rgba(251,191,36,0.10)" : "rgba(239,68,68,0.12)", border: `1px solid ${isWarn ? "rgba(251,191,36,0.35)" : "rgba(239,68,68,0.3)"}`, borderRadius:10, padding:"10px 16px", margin:"16px 24px 0", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13 }}>
+            <span style={{ color: isWarn ? "#FCD34D" : "#FCA5A5" }}>{error}</span>
+            <button onClick={()=>setError("")} style={{ background:"none", border:"none", color:"#9CA3AF", cursor:"pointer", fontSize:16 }}>✕</button>
+          </div>
+        );
+      })()}
 
       {/* ════════════════════════════════════════════════════════════ */}
       {/* PHASE 1 — FETCH                                             */}
@@ -8096,8 +8114,3 @@ Focus on: central bank decisions, CPI/inflation, GDP, employment/payrolls, PMI, 
     </div>
   );
 }
-
-    ReactDOM.createRoot(document.getElementById('root')).render(<VantageAutomation />);
-  </script>
-</body>
-</html>
